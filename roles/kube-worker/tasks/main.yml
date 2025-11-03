@@ -1,0 +1,34 @@
+---
+# ---------------------------------------------------------
+# Kubernetes Worker Setup Tasks
+# ---------------------------------------------------------
+
+- name: Reset kubeadm on worker
+  command: kubeadm reset -f
+  ignore_errors: yes
+
+# ---------------------------------------------------------
+# Wait until master join command is available
+# ---------------------------------------------------------
+- name: Wait for join command fact to be available
+  wait_for:
+    timeout: 30
+  when: "'masters' in groups and hostvars[groups['masters'][0]].worker_join_cmd is not defined"
+
+# ---------------------------------------------------------
+# Join worker node to Kubernetes cluster
+# ---------------------------------------------------------
+- name: Join worker to cluster
+  command: "{{ hostvars[groups['masters'][0]]['worker_join_cmd'] }}"
+  when: "'masters' in groups and hostvars[groups['masters'][0]].worker_join_cmd is defined"
+  register: join_result
+  retries: 3
+  delay: 10
+  until: join_result.rc == 0
+
+# ---------------------------------------------------------
+# Debug output (optional)
+# ---------------------------------------------------------
+- name: Display join result
+  debug:
+    var: join_result.stdout

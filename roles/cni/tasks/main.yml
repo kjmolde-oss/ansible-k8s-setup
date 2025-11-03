@@ -1,0 +1,24 @@
+---
+- name: Ensure old Flannel DaemonSet is removed (if exists)
+  command: kubectl delete daemonset -n kube-flannel kube-flannel-ds
+  environment:
+    KUBECONFIG: "/home/{{ ansible_user }}/.kube/config"
+  register: flannel_delete
+  failed_when: false
+  changed_when: "'deleted' in flannel_delete.stdout"
+
+- name: Apply Flannel CNI (latest version)
+  command: kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+  environment:
+    KUBECONFIG: "/home/{{ ansible_user }}/.kube/config"
+  register: flannel_apply
+  changed_when: "'created' in flannel_apply.stdout or 'configured' in flannel_apply.stdout"
+
+- name: Wait for Flannel pods to become ready
+  shell: |
+    kubectl wait --for=condition=ready pod -l app=flannel -n kube-flannel --timeout=180s
+  environment:
+    KUBECONFIG: "/home/{{ ansible_user }}/.kube/config"
+  register: flannel_wait
+  changed_when: false
+  failed_when: flannel_wait.rc != 0

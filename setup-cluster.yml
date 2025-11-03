@@ -1,0 +1,33 @@
+---
+- name: 1. Apply Common Configurations to All Nodes
+  hosts: all # Runs on masters and workers
+  become: yes # Run tasks with sudo
+  roles:
+    - common
+    - docker
+    - containerd # Role tasks defined below
+    - kube-packages
+  handlers: # Handler added here
+    - name: Restart containerd
+      listen: "Restart containerd" # Explicitly listen for the notify event
+      systemd:
+        name: containerd
+        state: restarted
+
+- name: 2. Setup Master Node
+  hosts: masters
+  become: yes
+  roles:
+    - kube-master
+
+- name: 3. Setup Worker Nodes
+  hosts: workers
+  become: yes
+  roles:
+    - kube-worker
+
+- name: 4. Install CNI Plugin (Run on master)
+  hosts: masters
+  become: no # Run as the user configured to use kubectl (kjmolde)
+  roles:
+    - cni

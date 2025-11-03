@@ -1,0 +1,68 @@
+---
+- name: Ensure Kubernetes GPG keyring directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Remove potentially corrupted Kubernetes GPG key file first
+  ansible.builtin.file:
+    path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    state: absent # Delete the file if it exists
+
+- name: Download and add Kubernetes GPG key
+  ansible.builtin.get_url:
+    url: https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key # <-- Corrected 'k8s.io'
+    dest: /tmp/kubernetes-apt-keyring.asc
+    mode: '0644'
+    force: true
+
+- name: De-armor Kubernetes GPG key
+  ansible.builtin.command: gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/kubernetes-apt-keyring.asc
+  args:
+    creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg # Only run if the final file doesn't exist
+  changed_when: false # This task doesn't change system state in Ansible's view
+
+- name: Clean up temporary ASCII key file
+  ansible.builtin.file:
+    path: /tmp/kubernetes-apt-keyring.asc
+    state: absent
+
+- name: Add Kubernetes repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /" # <-- Corrected 'k8s.io'
+    filename: kubernetes
+    state: present
+    update_cache: no
+
+- name: Update apt cache with retries
+  ansible.builtin.apt:
+    update_cache: yes
+  register: apt_update_result
+  until: apt_update_result is succeeded
+  retries: 3
+  delay: 5
+
+- name: Install kubelet, kubeadm, kubectl
+  ansible.builtin.apt:
+    name:
+      - "kubelet={{ kubernetes_version }}-*"
+      - "kubeadm={{ kubernetes_version }}-*"
+      - "kubectl={{ kubernetes_version }}-*"
+    state: present
+    allow_downgrade: yes # In case a slightly newer patch exists
+
+- name: Hold Kubernetes packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+- name: Ensure kubelet service is enabled but not started (kubeadm will start it)
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: yes
+    state: stopped # Kubeadm handles starting it after join/init

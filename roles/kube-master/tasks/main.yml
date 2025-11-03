@@ -1,0 +1,98 @@
+---
+# ---------------------------------------------------------
+# Kubernetes Master Setup Tasks
+# ---------------------------------------------------------
+
+- name: Reset kubeadm (ensure clean state)
+  command: kubeadm reset -f
+  ignore_errors: yes  # Ignore if already reset
+
+- name: Remove residual etcd data
+  file:
+    path: /var/lib/etcd
+    state: absent
+
+# ---------------------------------------------------------
+# Initialize Kubernetes control plane
+# ---------------------------------------------------------
+- name: Initialize Kubernetes cluster
+  command: >
+    kubeadm init
+    --pod-network-cidr={{ pod_network_cidr }}
+    --apiserver-advertise-address={{ master_ip }}
+    --ignore-preflight-errors=NumCPU,Mem
+  register: kubeadm_init_result
+
+# ---------------------------------------------------------
+# Configure kubectl access for the master user
+# ---------------------------------------------------------
+- name: Create .kube directory for master user ({{ ansible_user }})
+  file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+
+- name: Copy admin.conf to user's kubeconfig
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: yes
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+
+# ---------------------------------------------------------
+# Extract and store join command for workers
+# ---------------------------------------------------------
+- name: Extract worker join command
+  shell: kubeadm token create --print-join-command
+  register: join_cmd
+  changed_when: false
+
+- name: Set join command fact
+  set_fact:
+    worker_join_cmd: "{{ join_cmd.stdout }}"
+  run_once: true
+  delegate_to: "{{ inventory_hostname }}"
+
+- name: Debug join command
+  debug:
+    msg: "Worker join command: {{ worker_join_cmd }}"
+  run_once: true
+
+# ---------------------------------------------------------
+# Install Flannel network plugin
+# ---------------------------------------------------------
+- name: Install Flannel CNI network plugin
+  become: yes
+  environment:
+    KUBECONFIG: "/etc/kubernetes/admin.conf"
+  command: kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
+  register: flannel_apply
+  retries: 3
+  delay: 10
+  until: flannel_apply.rc == 0
+
+# ---------------------------------------------------------
+# Verify cluster status
+# ---------------------------------------------------------
+- name: Wait for API server and nodes to become ready
+  command: kubectl get nodes
+  environment:
+    KUBECONFIG: "/etc/kubernetes/admin.conf"
+  register: check_nodes
+  retries: 10
+  delay: 10
+  until: check_nodes.rc == 0
+
+- name: Show current node status
+  command: kubectl get nodes -o wide
+  environment:
+    KUBECONFIG: "/etc/kubernetes/admin.conf"
+  register: nodes_output
+
+- name: Display nodes
+  debug:
+    var: nodes_output.stdout
