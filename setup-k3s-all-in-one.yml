@@ -1,0 +1,133 @@
+---
+# --- PLAY 1: I-INSTALL ANG DOCKER UG I-PREPARE ANG DISK ---
+- hosts: ikarl-vm
+  become: yes # Run tasks as root (sudo)
+  tasks:
+    # --- Cleanup tasks (gikan sa daan nga errors) ---
+    - name: Clean up old conflicting Docker GPG keys
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/keyrings/docker.gpg
+        - /usr/share/keyrings/docker-archive-keyring.gpg
+        - /etc/apt/keyrings/docker.asc
+
+    - name: Clean up old conflicting Docker sources list
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/docker.list
+        state: absent
+
+    - name: Install dependencies (curl, gpg, etc.)
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+    # --- End sa Cleanup ---
+
+    - name: Download Docker official GPG key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+        force: true
+
+    - name: Add Docker APT repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+        update_cache: yes
+        
+    - name: Create docker data directory on new disk
+      ansible.builtin.file:
+        path: /mnt/newdisk/docker-data
+        state: directory
+        mode: '0755'
+
+    - name: Configure Docker to use the new data directory
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "data-root": "/mnt/newdisk/docker-data"
+          }
+        mode: '0644'
+      notify: Restart Docker Service
+
+    - name: Install Docker Engine and containerd.io
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+
+    - name: Ensure Docker service is started and enabled
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add user 'ikarl' to docker group
+      ansible.builtin.user:
+        name: "ikarl" 
+        groups: docker
+        append: yes
+
+    - name: Create a temporary directory on the new disk
+      ansible.builtin.file:
+        path: /mnt/newdisk/tmp
+        state: directory
+        mode: '1777'
+        
+  handlers:
+    - name: Restart Docker Service
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
+
+# --- PLAY 2: I-REFRESH ANG KONEKSYON ---
+- hosts: ikarl-vm
+  become: no
+  tasks:
+    - name: Reset connection to apply new group membership
+      ansible.builtin.meta: reset_connection
+
+# --- PLAY 3: I-INSTALL ANG K3D UG I-CREATE ANG CLUSTER ---
+- hosts: ikarl-vm
+  become: no # Run tasks as 'ikarl' user, NOT root
+  tasks:
+    - name: Install k3d
+      ansible.builtin.shell:
+        cmd: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+      args:
+        creates: /usr/local/bin/k3d
+
+    # --- MAO NI ANG BAG-O NGA TASK ---
+    - name: Ensure old kubeconfig is removed (to force cluster recreation)
+      ansible.builtin.file:
+        path: /home/ikarl/.kube/config
+        state: absent
+    # --- END SA BAG-O NGA TASK ---
+
+    - name: Create k3d cluster (1 server, 2 agents)
+      ansible.builtin.command:
+        # Gi-add na nato ang port mapping para sa imong service
+        cmd: k3d cluster create my-k8s-cluster --servers 1 --agents 2 -p "30080:30080@loadbalancer"
+      environment:
+        # Sultihi ang k3d nga adto sa dako nga disk mo-save ug temp files
+        TMPDIR: /mnt/newdisk/tmp
+      args:
+        # Karon, kani nga "creates" kay mo-work na kay gi-delete na nato sa taas
+        creates: /home/ikarl/.kube/config
+
+    - name: "--- CLUSTER IS READY ---"
+      ansible.builtin.debug:
+        msg:
+          - "SUCCESS! Your k3d cluster is created."
+          - "Run 'kubectl get nodes' to check the status."
