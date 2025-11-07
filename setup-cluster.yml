@@ -1,6 +1,6 @@
 ---
 - name: 1. Apply Common Configurations to All Nodes
-  hosts: all # Runs on masters and workers
+  hosts: all 
   become: yes # Run tasks with sudo
   roles:
     - common
